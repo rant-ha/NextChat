@@ -1,0 +1,1 @@
+{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"],"env":{"DEFAULT_MINIMUM_TOKENS":""}},"google-ai-search":{"command":"npx","args":["google-ai-mode-mcp@latest"],"alwaysAllow":["search_ai"]}}}

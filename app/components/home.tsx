@@ -82,6 +82,17 @@ const McpMarketPage = dynamic(
   },
 );
 
+const Arena = dynamic(async () => (await import("./arena")).Arena, {
+  loading: () => <Loading noLogo />,
+});
+
+const ArenaAdmin = dynamic(
+  async () => (await import("./arena-admin")).ArenaAdmin,
+  {
+    loading: () => <Loading noLogo />,
+  },
+);
+
 export function useSwitchTheme() {
   const config = useAppConfig();
 
@@ -194,7 +205,9 @@ function Screen() {
         />
         <WindowContent>
           <Routes>
-            <Route path={Path.Home} element={<Chat />} />
+            <Route path={Path.Home} element={<Arena />} />
+            <Route path={Path.Arena} element={<Arena />} />
+            <Route path={Path.ArenaAdmin} element={<ArenaAdmin />} />
             <Route path={Path.NewChat} element={<NewChat />} />
             <Route path={Path.Masks} element={<MaskPage />} />
             <Route path={Path.Plugins} element={<PluginPage />} />
@@ -256,6 +269,16 @@ export function Home() {
       }
     };
     initMcp();
+
+    // Arena: 尝试在启动时执行一次备份到期检查（3 天间隔）
+    // 定时点（例如每天 08:00）更适合放在 Google Apps Script 或服务端 Cron。
+    // 客户端这里只做“到期即发起”的补偿机制。
+    try {
+      const { useArenaStore } = require("../store/arena");
+      useArenaStore.getState().checkAndPerformBackup();
+    } catch (e) {
+      console.warn("[Arena] backup check skipped", e);
+    }
   }, []);
 
   if (!useHasHydrated()) {

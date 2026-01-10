@@ -8,33 +8,45 @@ import React, {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import { useNavigate } from "react-router-dom";
 
 import styles from "./arena.module.scss";
 
 import LoadingIcon from "../icons/three-dots.svg";
-import ReturnIcon from "../icons/return.svg";
+import CopyIcon from "../icons/copy.svg";
+import ReloadIcon from "../icons/reload.svg";
+import MaxIcon from "../icons/max.svg";
+import SendWhiteIcon from "../icons/send-white.svg";
 
-import { Path } from "../constant";
 import { useArenaStore, VoteType } from "../store/arena";
 import { useChatStore } from "../store/chat";
 import { Mask, useMaskStore } from "../store/mask";
-import { getMessageTextContent } from "../utils";
+import { getMessageTextContent, copyToClipboard } from "../utils";
 import { IconButton } from "./button";
+import clsx from "clsx";
 
 const Markdown = dynamic(async () => (await import("./markdown")).Markdown, {
   loading: () => <LoadingIcon />,
 });
 
-function ArenaChatView(props: { title: string; sessionId: string }) {
+interface ArenaPanelProps {
+  title: string;
+  sessionId: string;
+  revealed?: boolean;
+  realName?: string;
+}
+
+function ArenaPanel(props: ArenaPanelProps) {
+  const { title, sessionId, revealed, realName } = props;
   const chatStore = useChatStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const session = useMemo(() => {
-    return chatStore.sessions.find((s) => s.id === props.sessionId);
-  }, [chatStore.sessions, props.sessionId]);
+    return chatStore.sessions.find((s) => s.id === sessionId);
+  }, [chatStore.sessions, sessionId]);
 
-  const messages = session?.messages ?? [];
+  const messages = useMemo(() => {
+    return session?.messages ?? [];
+  }, [session?.messages]);
 
   useEffect(() => {
     const dom = scrollRef.current;
@@ -44,49 +56,83 @@ function ArenaChatView(props: { title: string; sessionId: string }) {
     });
   }, [messages.length]);
 
+  const lastAssistantMessage = useMemo(() => {
+    const msgs = messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant") {
+        return msgs[i];
+      }
+    }
+    return null;
+  }, [messages]);
+
+  const isStreaming = lastAssistantMessage?.streaming ?? false;
+
   return (
-    <div className={styles["arena-chat"]}>
-      <div className={styles["arena-chat-title"]}>{props.title}</div>
-      <div className={styles["arena-chat-body"]} ref={scrollRef}>
-        {messages.length === 0 && (
-          <div className={styles["arena-chat-empty"]}>
-            <span>等待开始对话…</span>
+    <div className={styles["arena-panel"]}>
+      <div className={styles["arena-panel-header"]}>
+        <div>
+          <div className={styles["arena-panel-title"]}>{title}</div>
+          {revealed && realName && (
+            <div className={styles["arena-revealed-name"]}>({realName})</div>
+          )}
+        </div>
+        <div className={styles["arena-panel-actions"]}>
+          <button
+            title="Copy"
+            onClick={() => {
+              if (lastAssistantMessage) {
+                copyToClipboard(getMessageTextContent(lastAssistantMessage));
+              }
+            }}
+          >
+            <CopyIcon />
+          </button>
+          <button title="Reload">
+            <ReloadIcon />
+          </button>
+          <button title="Expand">
+            <MaxIcon />
+          </button>
+        </div>
+      </div>
+      <div className={styles["arena-panel-body"]} ref={scrollRef}>
+        {messages.length === 0 ? (
+          <div className={styles["arena-empty"]}>Waiting for input...</div>
+        ) : (
+          messages.map((m) => {
+            const isUser = m.role === "user";
+            const content = getMessageTextContent(m);
+            return (
+              <div
+                key={m.id}
+                className={clsx(styles["arena-message"], {
+                  [styles["arena-message-user"]]: isUser,
+                  [styles["arena-message-assistant"]]: !isUser,
+                })}
+              >
+                <div className={styles["arena-message-content"]}>
+                  <Markdown content={content} defaultShow />
+                </div>
+              </div>
+            );
+          })
+        )}
+        {isStreaming && (
+          <div className={styles["arena-loading"]}>
+            <div className={styles["arena-typing-indicator"]}>
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
           </div>
         )}
-        {messages.map((m) => {
-          const isUser = m.role === "user";
-          const content = getMessageTextContent(m);
-          return (
-            <div
-              key={m.id}
-              className={
-                isUser
-                  ? styles["arena-message-user"]
-                  : styles["arena-message-assistant"]
-              }
-            >
-              <div className={styles["arena-message-role"]}>
-                {isUser ? "User" : "Assistant"}
-              </div>
-              <div className={styles["arena-message-content"]}>
-                <Markdown content={content} defaultShow />
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
 }
 
-function toMaskTitle(mask: Mask | undefined, blind: boolean, fallback: string) {
-  if (blind) return fallback;
-  return mask?.name ?? fallback;
-}
-
 export function Arena() {
-  const navigate = useNavigate();
-
   const arenaStore = useArenaStore();
   const chatStore = useChatStore();
   const maskStore = useMaskStore();
@@ -96,6 +142,7 @@ export function Arena() {
   const [leftMaskId, setLeftMaskId] = useState<string>(masks.at(0)?.id ?? "");
   const [rightMaskId, setRightMaskId] = useState<string>(masks.at(1)?.id ?? "");
   const [blind, setBlind] = useState<boolean>(true);
+  const [revealed, setRevealed] = useState<boolean>(false);
 
   const leftMask = useMemo(
     () => masks.find((m) => m.id === leftMaskId),
@@ -110,17 +157,16 @@ export function Arena() {
 
   const [userInput, setUserInput] = useState<string>("");
   const [isSending, setIsSending] = useState<boolean>(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const waitForFinalAssistant = useCallback(
     async (sessionId: string, timeoutMs: number = 120_000) => {
       const start = Date.now();
 
-      // 轮询等待流式输出结束，取最后一条 assistant 消息
       while (Date.now() - start < timeoutMs) {
         const session = chatStore.sessions.find((s) => s.id === sessionId);
         const msgs = session?.messages ?? [];
 
-        // 找到最后一条 assistant
         for (let i = msgs.length - 1; i >= 0; i -= 1) {
           const m = msgs[i];
           if (m?.role !== "assistant") continue;
@@ -139,11 +185,11 @@ export function Arena() {
   const startMatch = useCallback(() => {
     if (!canStart || !leftMask || !rightMask) return;
 
-    // 约束：同一模型/同一 provider，仅对比系统提示词（mask.context）差异
+    setRevealed(false);
+
     const baseModel = leftMask.modelConfig.model;
     const baseProviderName = leftMask.modelConfig.providerName;
 
-    // 创建两个独立会话（各自携带不同的 Mask / system prompt）
     chatStore.newSession(leftMask);
     const sessionA = chatStore.currentSession();
     chatStore.updateTargetSession(sessionA, (s) => {
@@ -189,14 +235,12 @@ export function Arena() {
     setIsSending(true);
     setUserInput("");
 
-    // 依次触发两次请求（同一模型、不同系统提示词）
     chatStore.selectSession(leftIndex);
     await chatStore.onUserInput(text);
 
     chatStore.selectSession(rightIndex);
     await chatStore.onUserInput(text);
 
-    // 等待两侧最终回复（流式结束）并落库到 ArenaStore
     const [respA, respB] = await Promise.all([
       waitForFinalAssistant(arenaStore.leftSessionId),
       waitForFinalAssistant(arenaStore.rightSessionId),
@@ -209,46 +253,41 @@ export function Arena() {
   const vote = useCallback(
     (v: VoteType) => {
       arenaStore.submitVote(v);
+      if (blind) {
+        setRevealed(true);
+      }
     },
-    [arenaStore],
+    [arenaStore, blind],
   );
+
+  const endMatch = useCallback(() => {
+    arenaStore.endMatch();
+    setRevealed(false);
+  }, [arenaStore]);
+
+  const getTitle = (side: "left" | "right") => {
+    if (blind && !revealed) {
+      return side === "left" ? "Assistant A" : "Assistant B";
+    }
+    const mask = side === "left" ? leftMask : rightMask;
+    return mask?.name ?? (side === "left" ? "System A" : "System B");
+  };
 
   return (
     <div className={styles["arena"]}>
-      <div className="window-header" data-tauri-drag-region>
-        <div className="window-actions">
-          <div className="window-action-button">
-            <IconButton
-              icon={<ReturnIcon />}
-              bordered
-              title="返回"
-              onClick={() => navigate(Path.Home)}
-            />
-          </div>
-        </div>
-
-        <div className={styles["arena-title"]}>
-          <div className={styles["arena-title-main"]}>Arena</div>
-          <div className={styles["arena-title-sub"]}>
-            同一模型，不同系统提示词（Mask）对比
-          </div>
-        </div>
-
-        <div className="window-actions">
-          <div className="window-action-button">
-            <IconButton
-              bordered
-              text="Admin"
-              onClick={() => navigate(Path.ArenaAdmin)}
-            />
-          </div>
+      {/* Header */}
+      <div className={styles["arena-header"]}>
+        <div className={styles["arena-header-title"]}>
+          ⚔️ Arena
+          <span className={styles["arena-header-mode"]}>Battle</span>
         </div>
       </div>
 
-      {!arenaStore.isMatchActive && (
+      {/* Setup or Main View */}
+      {!arenaStore.isMatchActive ? (
         <div className={styles["arena-setup"]}>
           <div className={styles["arena-setup-row"]}>
-            <label>左侧系统：</label>
+            <label>Left System:</label>
             <select
               value={leftMaskId}
               onChange={(e) => setLeftMaskId(e.currentTarget.value)}
@@ -262,7 +301,7 @@ export function Arena() {
           </div>
 
           <div className={styles["arena-setup-row"]}>
-            <label>右侧系统：</label>
+            <label>Right System:</label>
             <select
               value={rightMaskId}
               onChange={(e) => setRightMaskId(e.currentTarget.value)}
@@ -281,82 +320,110 @@ export function Arena() {
                 type="checkbox"
                 checked={blind}
                 onChange={(e) => setBlind(e.currentTarget.checked)}
-              />
-              盲测（隐藏系统名称）
+              />{" "}
+              Blind Test (hide system names until vote)
             </label>
           </div>
 
-          <div className={styles["arena-setup-row"]}>
-            <button
-              className={styles["arena-primary-btn"]}
-              disabled={!canStart}
-              onClick={startMatch}
-            >
-              开始对比
-            </button>
-          </div>
+          <button
+            className={styles["arena-start-btn"]}
+            disabled={!canStart}
+            onClick={startMatch}
+          >
+            Start Battle
+          </button>
 
           {!canStart && (
             <div className={styles["arena-setup-hint"]}>
-              需要选择两个不同的系统提示词（Mask）。
+              Please select two different system prompts (Masks).
             </div>
           )}
         </div>
-      )}
+      ) : (
+        <div className={styles["arena-main"]}>
+          {/* Two Panels */}
+          <div className={styles["arena-panels"]}>
+            <ArenaPanel
+              title={getTitle("left")}
+              sessionId={arenaStore.leftSessionId!}
+              revealed={revealed}
+              realName={leftMask?.name}
+            />
+            <ArenaPanel
+              title={getTitle("right")}
+              sessionId={arenaStore.rightSessionId!}
+              revealed={revealed}
+              realName={rightMask?.name}
+            />
+          </div>
 
-      {arenaStore.isMatchActive &&
-        arenaStore.leftSessionId &&
-        arenaStore.rightSessionId && (
-          <div className={styles["arena-main"]}>
-            <div className={styles["arena-panels"]}>
-              <ArenaChatView
-                title={toMaskTitle(leftMask, blind, "System A")}
-                sessionId={arenaStore.leftSessionId}
-              />
-              <ArenaChatView
-                title={toMaskTitle(rightMask, blind, "System B")}
-                sessionId={arenaStore.rightSessionId}
-              />
-            </div>
-
-            <div className={styles["arena-controls"]}>
-              <div className={styles["arena-vote"]}>
-                <button onClick={() => vote("A")}>A 更好</button>
-                <button onClick={() => vote("B")}>B 更好</button>
-                <button onClick={() => vote("Tie")}>平局</button>
-                <button onClick={() => vote("BothBad")}>都不好</button>
-              </div>
-
-              <div className={styles["arena-input"]}>
-                <textarea
-                  value={userInput}
-                  onChange={(e) => setUserInput(e.currentTarget.value)}
-                  placeholder="输入同一条消息，分别发送给 A/B 两个系统…"
-                  rows={3}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      sendToBoth();
-                    }
-                  }}
-                />
-                <button
-                  className={styles["arena-primary-btn"]}
-                  onClick={sendToBoth}
-                  disabled={isSending}
-                >
-                  {isSending ? "发送中…" : "发送"}
-                </button>
-                <button
-                  className={styles["arena-secondary-btn"]}
-                  onClick={() => arenaStore.endMatch()}
-                >
-                  结束对局
-                </button>
-              </div>
+          {/* Vote Section */}
+          <div className={styles["arena-vote-section"]}>
+            <div className={styles["arena-vote-buttons"]}>
+              <button
+                className={clsx(
+                  styles["arena-vote-btn"],
+                  styles["left-better"],
+                )}
+                onClick={() => vote("A")}
+              >
+                ← Left is Better
+              </button>
+              <button
+                className={clsx(styles["arena-vote-btn"], styles["tie"])}
+                onClick={() => vote("Tie")}
+              >
+                It&apos;s a tie 🤝
+              </button>
+              <button
+                className={clsx(styles["arena-vote-btn"], styles["both-bad"])}
+                onClick={() => vote("BothBad")}
+              >
+                Both are bad 👎
+              </button>
+              <button
+                className={clsx(
+                  styles["arena-vote-btn"],
+                  styles["right-better"],
+                )}
+                onClick={() => vote("B")}
+              >
+                Right is Better →
+              </button>
             </div>
           </div>
-        )}
+
+          {/* Input Section */}
+          <div className={styles["arena-input-section"]}>
+            <div className={styles["arena-input-container"]}>
+              <textarea
+                ref={inputRef}
+                value={userInput}
+                onChange={(e) => setUserInput(e.currentTarget.value)}
+                placeholder="Ask followup..."
+                rows={2}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendToBoth();
+                  }
+                }}
+              />
+              <button
+                className={styles["arena-send-btn"]}
+                onClick={sendToBoth}
+                disabled={isSending}
+              >
+                <SendWhiteIcon />
+                {isSending ? "Sending..." : "Send"}
+              </button>
+              <button className={styles["arena-end-btn"]} onClick={endMatch}>
+                End Battle
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

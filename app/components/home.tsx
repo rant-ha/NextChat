@@ -29,7 +29,6 @@ import { getClientConfig } from "../config/client";
 import { type ClientApi, getClientApi } from "../client/api";
 import { useAccessStore } from "../store";
 import clsx from "clsx";
-import { initializeMcpSystem, isMcpEnabled } from "../mcp/actions";
 
 export function Loading(props: { noLogo?: boolean }) {
   return (
@@ -40,47 +39,9 @@ export function Loading(props: { noLogo?: boolean }) {
   );
 }
 
-const Artifacts = dynamic(async () => (await import("./artifacts")).Artifacts, {
-  loading: () => <Loading noLogo />,
-});
-
 const Settings = dynamic(async () => (await import("./settings")).Settings, {
   loading: () => <Loading noLogo />,
 });
-
-const Chat = dynamic(async () => (await import("./chat")).Chat, {
-  loading: () => <Loading noLogo />,
-});
-
-const NewChat = dynamic(async () => (await import("./new-chat")).NewChat, {
-  loading: () => <Loading noLogo />,
-});
-
-const MaskPage = dynamic(async () => (await import("./mask")).MaskPage, {
-  loading: () => <Loading noLogo />,
-});
-
-const PluginPage = dynamic(async () => (await import("./plugin")).PluginPage, {
-  loading: () => <Loading noLogo />,
-});
-
-const SearchChat = dynamic(
-  async () => (await import("./search-chat")).SearchChatPage,
-  {
-    loading: () => <Loading noLogo />,
-  },
-);
-
-const Sd = dynamic(async () => (await import("./sd")).Sd, {
-  loading: () => <Loading noLogo />,
-});
-
-const McpMarketPage = dynamic(
-  async () => (await import("./mcp-market")).McpMarketPage,
-  {
-    loading: () => <Loading noLogo />,
-  },
-);
 
 const Arena = dynamic(async () => (await import("./arena")).Arena, {
   loading: () => <Loading noLogo />,
@@ -92,6 +53,11 @@ const ArenaAdmin = dynamic(
     loading: () => <Loading noLogo />,
   },
 );
+
+// Keep Masks for system prompt selection in Arena
+const MaskPage = dynamic(async () => (await import("./mask")).MaskPage, {
+  loading: () => <Loading noLogo />,
+});
 
 export function useSwitchTheme() {
   const config = useAppConfig();
@@ -171,11 +137,8 @@ export function WindowContent(props: { children: React.ReactNode }) {
 function Screen() {
   const config = useAppConfig();
   const location = useLocation();
-  const isArtifact = location.pathname.includes(Path.Artifacts);
   const isHome = location.pathname === Path.Home;
   const isAuth = location.pathname === Path.Auth;
-  const isSd = location.pathname === Path.Sd;
-  const isSdNew = location.pathname === Path.SdNew;
 
   const isMobileScreen = useMobileScreen();
   const shouldTightBorder =
@@ -185,17 +148,8 @@ function Screen() {
     loadAsyncGoogleFont();
   }, []);
 
-  if (isArtifact) {
-    return (
-      <Routes>
-        <Route path="/artifacts/:id" element={<Artifacts />} />
-      </Routes>
-    );
-  }
   const renderContent = () => {
     if (isAuth) return <AuthPage />;
-    if (isSd) return <Sd />;
-    if (isSdNew) return <Sd />;
     return (
       <>
         <SideBar
@@ -208,13 +162,8 @@ function Screen() {
             <Route path={Path.Home} element={<Arena />} />
             <Route path={Path.Arena} element={<Arena />} />
             <Route path={Path.ArenaAdmin} element={<ArenaAdmin />} />
-            <Route path={Path.NewChat} element={<NewChat />} />
-            <Route path={Path.Masks} element={<MaskPage />} />
-            <Route path={Path.Plugins} element={<PluginPage />} />
-            <Route path={Path.SearchChat} element={<SearchChat />} />
-            <Route path={Path.Chat} element={<Chat />} />
             <Route path={Path.Settings} element={<Settings />} />
-            <Route path={Path.McpMarket} element={<McpMarketPage />} />
+            <Route path={Path.Masks} element={<MaskPage />} />
           </Routes>
         </WindowContent>
       </>
@@ -253,31 +202,14 @@ export function Home() {
   useHtmlLang();
 
   useEffect(() => {
-    console.log("[Config] got config from build time", getClientConfig());
     useAccessStore.getState().fetch();
 
-    const initMcp = async () => {
-      try {
-        const enabled = await isMcpEnabled();
-        if (enabled) {
-          console.log("[MCP] initializing...");
-          await initializeMcpSystem();
-          console.log("[MCP] initialized");
-        }
-      } catch (err) {
-        console.error("[MCP] failed to initialize:", err);
-      }
-    };
-    initMcp();
-
-    // Arena: 尝试在启动时执行一次备份到期检查（3 天间隔）
-    // 定时点（例如每天 08:00）更适合放在 Google Apps Script 或服务端 Cron。
-    // 客户端这里只做“到期即发起”的补偿机制。
+    // Silent backup check (no logs)
     try {
       const { useArenaStore } = require("../store/arena");
       useArenaStore.getState().checkAndPerformBackup();
-    } catch (e) {
-      console.warn("[Arena] backup check skipped", e);
+    } catch {
+      // Silent fail
     }
   }, []);
 

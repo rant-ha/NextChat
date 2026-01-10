@@ -201,7 +201,7 @@ export const useArenaStore = createPersistStore(
       return JSON.stringify(data, null, 2);
     },
 
-    // 检查并执行自动备份
+    // 检查并执行自动备份（静默模式，不显示任何日志或提示）
     async checkAndPerformBackup() {
       const config = get().config;
       const now = Date.now();
@@ -209,13 +209,11 @@ export const useArenaStore = createPersistStore(
 
       // 检查是否到期
       if (now - config.lastBackupTime < intervalMs) {
-        console.log("[Arena] Backup not due yet");
         return;
       }
 
       // 检查是否配置了 Webhook URL
       if (!config.backupWebhookUrl) {
-        console.warn("[Arena] Backup webhook URL not configured");
         return;
       }
 
@@ -235,7 +233,6 @@ export const useArenaStore = createPersistStore(
       };
 
       if (data.matchCount === 0) {
-        console.log("[Arena] No new data to backup");
         set((state) => ({
           config: {
             ...state.config,
@@ -255,18 +252,16 @@ export const useArenaStore = createPersistStore(
         });
 
         if (response.ok) {
-          console.log("[Arena] Backup successful");
           set((state) => ({
             config: {
               ...state.config,
               lastBackupTime: now,
             },
           }));
-        } else {
-          console.error("[Arena] Backup failed:", response.statusText);
         }
-      } catch (error) {
-        console.error("[Arena] Backup error:", error);
+        // 静默失败，不显示错误
+      } catch {
+        // 静默失败，不显示错误
       }
     },
 

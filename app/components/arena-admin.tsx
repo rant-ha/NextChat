@@ -10,6 +10,7 @@ import { IconButton } from "./button";
 
 // Admin password from environment variable
 // Set NEXT_PUBLIC_ARENA_ADMIN_PASSWORD in your .env.local file
+// Note: This is client-side gating (not a secret). Keep the route hidden from navigation.
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ARENA_ADMIN_PASSWORD || "";
 
 export function ArenaAdmin() {
@@ -221,7 +222,7 @@ export function ArenaAdmin() {
 
         <hr style={{ margin: "16px 0" }} />
 
-        <h3>Auto Backup (Webhook)</h3>
+        <h3>Auto Backup (Server Proxy)</h3>
         <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
           Configuration guide:{" "}
           <a
@@ -234,19 +235,11 @@ export function ArenaAdmin() {
           </a>{" "}
           (contains Google Apps Script code and deployment steps)
         </div>
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+          Webhook URL is now server-side only. Configure it via env var
+          <code style={{ marginLeft: 6 }}>ARENA_BACKUP_WEBHOOK_URL</code>.
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <label>
-            Webhook URL (Google Apps Script Web App):
-            <input
-              style={{ width: "100%" }}
-              value={arenaStore.config.backupWebhookUrl}
-              onChange={(e) =>
-                arenaStore.updateConfig({
-                  backupWebhookUrl: e.currentTarget.value,
-                })
-              }
-            />
-          </label>
           <label>
             Backup Interval (days):
             <input

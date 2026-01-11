@@ -8,38 +8,30 @@ import React, {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import { useNavigate } from "react-router-dom";
+import clsx from "clsx";
 
 import styles from "./arena.module.scss";
 
 import LoadingIcon from "../icons/three-dots.svg";
 import CopyIcon from "../icons/copy.svg";
-import ReloadIcon from "../icons/reload.svg";
-import MaxIcon from "../icons/max.svg";
 import SendWhiteIcon from "../icons/send-white.svg";
-import SettingsIcon from "../icons/settings.svg";
 
-import { Path } from "../constant";
 import { useArenaStore, VoteType } from "../store/arena";
 import { useChatStore } from "../store/chat";
-import { Mask, useMaskStore } from "../store/mask";
-import { getMessageTextContent, copyToClipboard } from "../utils";
-import { IconButton } from "./button";
-import clsx from "clsx";
+import { createEmptyMask } from "../store/mask";
+import { copyToClipboard, getMessageTextContent } from "../utils";
 
 const Markdown = dynamic(async () => (await import("./markdown")).Markdown, {
-  loading: () => <LoadingIcon />,
+  loading: () => <LoadingIcon />, // eslint-disable-line react/no-unstable-nested-components
 });
 
 interface ArenaPanelProps {
   title: string;
   sessionId: string;
-  revealed?: boolean;
-  realName?: string;
 }
 
 function ArenaPanel(props: ArenaPanelProps) {
-  const { title, sessionId, revealed, realName } = props;
+  const { title, sessionId } = props;
   const chatStore = useChatStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -74,12 +66,7 @@ function ArenaPanel(props: ArenaPanelProps) {
   return (
     <div className={styles["arena-panel"]}>
       <div className={styles["arena-panel-header"]}>
-        <div>
-          <div className={styles["arena-panel-title"]}>{title}</div>
-          {revealed && realName && (
-            <div className={styles["arena-revealed-name"]}>({realName})</div>
-          )}
-        </div>
+        <div className={styles["arena-panel-title"]}>{title}</div>
         <div className={styles["arena-panel-actions"]}>
           <button
             title="Copy"
@@ -90,12 +77,6 @@ function ArenaPanel(props: ArenaPanelProps) {
             }}
           >
             <CopyIcon />
-          </button>
-          <button title="Reload">
-            <ReloadIcon />
-          </button>
-          <button title="Expand">
-            <MaxIcon />
           </button>
         </div>
       </div>
@@ -135,33 +116,75 @@ function ArenaPanel(props: ArenaPanelProps) {
   );
 }
 
+function formatVoteLabel(vote: VoteType) {
+  switch (vote) {
+    case "A":
+      return "A";
+    case "B":
+      return "B";
+    case "Tie":
+      return "Tie";
+    case "BothBad":
+      return "Both Bad";
+    default:
+      return "";
+  }
+}
+
 export function Arena() {
-  const navigate = useNavigate();
   const arenaStore = useArenaStore();
   const chatStore = useChatStore();
-  const maskStore = useMaskStore();
-
-  const masks = useMemo(() => maskStore.getAll(), [maskStore]);
-
-  const [leftMaskId, setLeftMaskId] = useState<string>(masks.at(0)?.id ?? "");
-  const [rightMaskId, setRightMaskId] = useState<string>(masks.at(1)?.id ?? "");
-  const [blind, setBlind] = useState<boolean>(true);
-  const [revealed, setRevealed] = useState<boolean>(false);
-
-  const leftMask = useMemo(
-    () => masks.find((m) => m.id === leftMaskId),
-    [masks, leftMaskId],
-  );
-  const rightMask = useMemo(
-    () => masks.find((m) => m.id === rightMaskId),
-    [masks, rightMaskId],
-  );
-
-  const canStart = !!leftMask && !!rightMask && leftMask.id !== rightMask.id;
 
   const [userInput, setUserInput] = useState<string>("");
   const [isSending, setIsSending] = useState<boolean>(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const threads = useMemo(() => arenaStore.threads ?? [], [arenaStore.threads]);
+
+  const sortedThreads = useMemo(() => {
+    return [...threads].sort((a, b) => {
+      const ta = (a.updatedAt ?? a.timestamp) || 0;
+      const tb = (b.updatedAt ?? b.timestamp) || 0;
+      return tb - ta;
+    });
+  }, [threads]);
+
+  const activeThreadId =
+    arenaStore.currentThreadId ?? arenaStore.currentMatchId;
+
+  const currentThread = useMemo(() => {
+    if (!activeThreadId) return null;
+    return threads.find((t) => t.id === activeThreadId) ?? null;
+  }, [activeThreadId, threads]);
+
+  const leftSessionId =
+    arenaStore.leftSessionId ?? currentThread?.sessionIdA ?? null;
+  const rightSessionId =
+    arenaStore.rightSessionId ?? currentThread?.sessionIdB ?? null;
+
+  const leftSession = useMemo(() => {
+    if (!leftSessionId) return null;
+    return chatStore.sessions.find((s) => s.id === leftSessionId) ?? null;
+  }, [chatStore.sessions, leftSessionId]);
+
+  const rightSession = useMemo(() => {
+    if (!rightSessionId) return null;
+    return chatStore.sessions.find((s) => s.id === rightSessionId) ?? null;
+  }, [chatStore.sessions, rightSessionId]);
+
+  const hasAnyChatMessages =
+    (leftSession?.messages.length ?? 0) > 0 ||
+    (rightSession?.messages.length ?? 0) > 0;
+
+  const canVote = (currentThread?.messages.length ?? 0) > 0;
+  const isVoted = (currentThread?.vote ?? null) !== null;
+
+  useEffect(() => {
+    if (activeThreadId) return;
+    if (sortedThreads.length === 0) return;
+
+    arenaStore.selectThread(sortedThreads[0].id);
+  }, [activeThreadId, arenaStore, sortedThreads]);
 
   const waitForFinalAssistant = useCallback(
     async (sessionId: string, timeoutMs: number = 120_000) => {
@@ -186,235 +209,219 @@ export function Arena() {
     [chatStore.sessions],
   );
 
-  const startMatch = useCallback(() => {
-    if (!canStart || !leftMask || !rightMask) return;
+  const createNewThread = useCallback(() => {
+    const maskA = createEmptyMask();
+    const maskB = createEmptyMask();
 
-    setRevealed(false);
+    maskA.name = "Assistant A";
+    maskB.name = "Assistant B";
 
-    const baseModel = leftMask.modelConfig.model;
-    const baseProviderName = leftMask.modelConfig.providerName;
+    maskA.syncGlobalConfig = false;
+    maskB.syncGlobalConfig = false;
 
-    chatStore.newSession(leftMask);
+    chatStore.newSession(maskA);
     const sessionA = chatStore.currentSession();
     chatStore.updateTargetSession(sessionA, (s) => {
       s.mask.syncGlobalConfig = false;
-      s.mask.modelConfig.model = baseModel;
-      s.mask.modelConfig.providerName = baseProviderName;
     });
 
-    chatStore.newSession(rightMask);
+    chatStore.newSession(maskB);
     const sessionB = chatStore.currentSession();
     chatStore.updateTargetSession(sessionB, (s) => {
       s.mask.syncGlobalConfig = false;
-      s.mask.modelConfig.model = baseModel;
-      s.mask.modelConfig.providerName = baseProviderName;
+
+      // Force same base model/provider as A (defensive)
+      s.mask.modelConfig.model = sessionA.mask.modelConfig.model;
+      s.mask.modelConfig.providerName = sessionA.mask.modelConfig.providerName;
     });
 
-    arenaStore.startNewMatch(
-      leftMask,
-      rightMask,
-      sessionA.id,
-      sessionB.id,
-      blind,
-    );
-  }, [arenaStore, blind, canStart, chatStore, leftMask, rightMask]);
+    arenaStore.startNewThread(maskA, maskB, sessionA.id, sessionB.id, true);
+
+    const state = useArenaStore.getState();
+    return {
+      threadId: state.currentThreadId ?? state.currentMatchId,
+      leftSessionId: state.leftSessionId,
+      rightSessionId: state.rightSessionId,
+    };
+  }, [arenaStore, chatStore]);
 
   const sendToBoth = useCallback(async () => {
     if (isSending) return;
-    if (!arenaStore.isMatchActive) return;
-    if (!arenaStore.leftSessionId || !arenaStore.rightSessionId) return;
 
     const text = userInput.trim();
     if (!text) return;
 
-    const leftIndex = chatStore.sessions.findIndex(
-      (s) => s.id === arenaStore.leftSessionId,
-    );
-    const rightIndex = chatStore.sessions.findIndex(
-      (s) => s.id === arenaStore.rightSessionId,
-    );
-
-    if (leftIndex < 0 || rightIndex < 0) return;
-
     setIsSending(true);
     setUserInput("");
 
-    chatStore.selectSession(leftIndex);
-    await chatStore.onUserInput(text);
+    let state = useArenaStore.getState();
 
-    chatStore.selectSession(rightIndex);
-    await chatStore.onUserInput(text);
+    if (!state.leftSessionId || !state.rightSessionId) {
+      createNewThread();
+      state = useArenaStore.getState();
+    }
 
-    const [respA, respB] = await Promise.all([
-      waitForFinalAssistant(arenaStore.leftSessionId),
-      waitForFinalAssistant(arenaStore.rightSessionId),
-    ]);
+    const leftId = state.leftSessionId;
+    const rightId = state.rightSessionId;
 
-    arenaStore.recordConversation(text, respA, respB);
-    setIsSending(false);
-  }, [arenaStore, chatStore, isSending, userInput, waitForFinalAssistant]);
+    if (!leftId || !rightId) {
+      setIsSending(false);
+      return;
+    }
+
+    const leftSession = chatStore.sessions.find((s) => s.id === leftId);
+    const rightSession = chatStore.sessions.find((s) => s.id === rightId);
+
+    if (!leftSession || !rightSession) {
+      setIsSending(false);
+      return;
+    }
+
+    const provider = (
+      leftSession.mask.modelConfig.providerName || "openai"
+    ).toLowerCase();
+    const model = leftSession.mask.modelConfig.model || "";
+
+    const messagesA = (leftSession.messages || []).map((m: any) => ({
+      role: m.role,
+      content: getMessageTextContent(m),
+    }));
+    const messagesB = (rightSession.messages || []).map((m: any) => ({
+      role: m.role,
+      content: getMessageTextContent(m),
+    }));
+
+    try {
+      const res = await fetch("/api/arena/turn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messagesA,
+          messagesB,
+          userInput: text,
+          a: { mode: "method", methodId: "template_system" },
+          b: { mode: "method", methodId: "baseline" },
+          model: { provider, model },
+        }),
+      });
+      const json = await res.json();
+      if (!json?.ok) {
+        throw new Error(json?.error || "Arena turn failed");
+      }
+      const respA = json.a?.text ?? "";
+      const respB = json.b?.text ?? "";
+
+      // append messages into sessions
+      chatStore.updateTargetSession(leftSession, (s) => {
+        s.messages = s.messages.concat([
+          {
+            id: `${Date.now()}-u`,
+            role: "user",
+            content: text,
+            date: new Date().toLocaleString(),
+          },
+          {
+            id: `${Date.now()}-a`,
+            role: "assistant",
+            content: respA,
+            date: new Date().toLocaleString(),
+            streaming: false,
+          },
+        ] as any);
+      });
+      chatStore.updateTargetSession(rightSession, (s) => {
+        s.messages = s.messages.concat([
+          {
+            id: `${Date.now()}-u2`,
+            role: "user",
+            content: text,
+            date: new Date().toLocaleString(),
+          },
+          {
+            id: `${Date.now()}-b`,
+            role: "assistant",
+            content: respB,
+            date: new Date().toLocaleString(),
+            streaming: false,
+          },
+        ] as any);
+      });
+
+      arenaStore.recordConversation(text, respA, respB);
+    } catch (e) {
+      console.error("[Arena] sendToBoth failed", e);
+    } finally {
+      setIsSending(false);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [arenaStore, chatStore, createNewThread, isSending, userInput]);
 
   const vote = useCallback(
     (v: VoteType) => {
       arenaStore.submitVote(v);
-      if (blind) {
-        setRevealed(true);
-      }
     },
-    [arenaStore, blind],
+    [arenaStore],
   );
 
-  const endMatch = useCallback(() => {
-    arenaStore.endMatch();
-    setRevealed(false);
-  }, [arenaStore]);
-
-  const getTitle = (side: "left" | "right") => {
-    if (blind && !revealed) {
-      return side === "left" ? "Assistant A" : "Assistant B";
-    }
-    const mask = side === "left" ? leftMask : rightMask;
-    return mask?.name ?? (side === "left" ? "System A" : "System B");
-  };
-
   return (
-    <div className={styles["arena"]}>
-      {/* Header */}
-      <div className={styles["arena-header"]}>
-        <div className={styles["arena-header-title"]}>
-          ⚔️ Arena
-          <span className={styles["arena-header-mode"]}>Battle</span>
-        </div>
-        <div className={styles["arena-header-actions"]}>
+    <div className={styles["arena-root"]}>
+      <div className={styles["arena-sidebar"]}>
+        <div className={styles["arena-sidebar-header"]}>
           <button
-            className={styles["arena-settings-btn"]}
-            onClick={() => navigate(Path.Settings)}
-            title="Settings"
+            className={styles["arena-new-chat"]}
+            onClick={() => {
+              createNewThread();
+              requestAnimationFrame(() => inputRef.current?.focus());
+            }}
           >
-            <SettingsIcon />
+            New Chat
           </button>
+        </div>
+
+        <div className={styles["arena-thread-list"]}>
+          {sortedThreads.map((t) => {
+            const isActive = t.id === activeThreadId;
+            const title = (t.title ?? "").trim() || "New Chat";
+            const subtitle = t.vote
+              ? `Voted: ${formatVoteLabel(t.vote)}`
+              : "Not voted";
+
+            return (
+              <button
+                key={t.id}
+                className={clsx(styles["arena-thread-item"], {
+                  [styles["arena-thread-item-active"]]: isActive,
+                })}
+                onClick={() => {
+                  arenaStore.selectThread(t.id);
+                  requestAnimationFrame(() => inputRef.current?.focus());
+                }}
+              >
+                <div className={styles["arena-thread-title"]}>{title}</div>
+                <div className={styles["arena-thread-subtitle"]}>
+                  {subtitle}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Setup or Main View */}
-      {!arenaStore.isMatchActive ? (
-        <div className={styles["arena-setup"]}>
-          <div className={styles["arena-setup-row"]}>
-            <label>Left System:</label>
-            <select
-              value={leftMaskId}
-              onChange={(e) => setLeftMaskId(e.currentTarget.value)}
-            >
-              {masks.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={styles["arena-setup-row"]}>
-            <label>Right System:</label>
-            <select
-              value={rightMaskId}
-              onChange={(e) => setRightMaskId(e.currentTarget.value)}
-            >
-              {masks.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={styles["arena-setup-row"]}>
-            <label>
-              <input
-                type="checkbox"
-                checked={blind}
-                onChange={(e) => setBlind(e.currentTarget.checked)}
-              />{" "}
-              Blind Test (hide system names until vote)
-            </label>
-          </div>
-
-          <button
-            className={styles["arena-start-btn"]}
-            disabled={!canStart}
-            onClick={startMatch}
-          >
-            Start Battle
-          </button>
-
-          {!canStart && (
-            <div className={styles["arena-setup-hint"]}>
-              Please select two different system prompts (Masks).
+      <div className={styles["arena-content"]}>
+        {!hasAnyChatMessages ? (
+          <div className={styles["arena-landing"]}>
+            <div className={styles["arena-landing-title"]}>Ask anything</div>
+            <div className={styles["arena-landing-subtitle"]}>
+              Chat with two anonymous assistants and vote when you are ready.
             </div>
-          )}
-        </div>
-      ) : (
-        <div className={styles["arena-main"]}>
-          {/* Two Panels */}
-          <div className={styles["arena-panels"]}>
-            <ArenaPanel
-              title={getTitle("left")}
-              sessionId={arenaStore.leftSessionId!}
-              revealed={revealed}
-              realName={leftMask?.name}
-            />
-            <ArenaPanel
-              title={getTitle("right")}
-              sessionId={arenaStore.rightSessionId!}
-              revealed={revealed}
-              realName={rightMask?.name}
-            />
-          </div>
 
-          {/* Vote Section */}
-          <div className={styles["arena-vote-section"]}>
-            <div className={styles["arena-vote-buttons"]}>
-              <button
-                className={clsx(
-                  styles["arena-vote-btn"],
-                  styles["left-better"],
-                )}
-                onClick={() => vote("A")}
-              >
-                ← Left is Better
-              </button>
-              <button
-                className={clsx(styles["arena-vote-btn"], styles["tie"])}
-                onClick={() => vote("Tie")}
-              >
-                It&apos;s a tie 🤝
-              </button>
-              <button
-                className={clsx(styles["arena-vote-btn"], styles["both-bad"])}
-                onClick={() => vote("BothBad")}
-              >
-                Both are bad 👎
-              </button>
-              <button
-                className={clsx(
-                  styles["arena-vote-btn"],
-                  styles["right-better"],
-                )}
-                onClick={() => vote("B")}
-              >
-                Right is Better →
-              </button>
-            </div>
-          </div>
-
-          {/* Input Section */}
-          <div className={styles["arena-input-section"]}>
-            <div className={styles["arena-input-container"]}>
+            <div className={styles["arena-landing-input"]}>
               <textarea
                 ref={inputRef}
                 value={userInput}
                 onChange={(e) => setUserInput(e.currentTarget.value)}
-                placeholder="Ask followup..."
-                rows={2}
+                placeholder="Ask anything..."
+                rows={3}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -430,13 +437,98 @@ export function Arena() {
                 <SendWhiteIcon />
                 {isSending ? "Sending..." : "Send"}
               </button>
-              <button className={styles["arena-end-btn"]} onClick={endMatch}>
-                End Battle
-              </button>
             </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className={styles["arena-main"]}>
+            <div className={styles["arena-panels"]}>
+              {leftSessionId && (
+                <ArenaPanel title="Assistant A" sessionId={leftSessionId} />
+              )}
+              {rightSessionId && (
+                <ArenaPanel title="Assistant B" sessionId={rightSessionId} />
+              )}
+            </div>
+
+            {canVote && (
+              <div className={styles["arena-vote-section"]}>
+                <div className={styles["arena-vote-buttons"]}>
+                  <button
+                    className={clsx(
+                      styles["arena-vote-btn"],
+                      styles["left-better"],
+                    )}
+                    onClick={() => vote("A")}
+                    disabled={isVoted}
+                  >
+                    A is Better
+                  </button>
+                  <button
+                    className={clsx(styles["arena-vote-btn"], styles["tie"])}
+                    onClick={() => vote("Tie")}
+                    disabled={isVoted}
+                  >
+                    Tie
+                  </button>
+                  <button
+                    className={clsx(
+                      styles["arena-vote-btn"],
+                      styles["both-bad"],
+                    )}
+                    onClick={() => vote("BothBad")}
+                    disabled={isVoted}
+                  >
+                    Both Bad
+                  </button>
+                  <button
+                    className={clsx(
+                      styles["arena-vote-btn"],
+                      styles["right-better"],
+                    )}
+                    onClick={() => vote("B")}
+                    disabled={isVoted}
+                  >
+                    B is Better
+                  </button>
+                </div>
+
+                {isVoted && (
+                  <div className={styles["arena-vote-locked"]}>
+                    Vote recorded. You can keep chatting, but you cannot change
+                    the vote.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={styles["arena-input-section"]}>
+              <div className={styles["arena-input-container"]}>
+                <textarea
+                  ref={inputRef}
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.currentTarget.value)}
+                  placeholder="Ask followup..."
+                  rows={2}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendToBoth();
+                    }
+                  }}
+                />
+                <button
+                  className={styles["arena-send-btn"]}
+                  onClick={sendToBoth}
+                  disabled={isSending}
+                >
+                  <SendWhiteIcon />
+                  {isSending ? "Sending..." : "Send"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

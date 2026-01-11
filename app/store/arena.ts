@@ -1,20 +1,43 @@
 import { nanoid } from "nanoid";
 import { createPersistStore } from "../utils/store";
 import { StoreKey } from "../constant";
-import { Mask } from "./mask";
+import type { Mask } from "./mask";
 
 export type VoteType = "A" | "B" | "Tie" | "BothBad" | null;
 
-export interface ArenaMatchRecord {
-  id: string;
+export interface ArenaTurnRecord {
+  userInput: string;
+  responseA: string;
+  responseB: string;
   timestamp: number;
-  testerId: string; // 测试者ID (可在设置中配置)
+}
 
-  // System configurations
+export interface ArenaThreadRecord {
+  id: string;
+
+  /** Thread created time */
+  timestamp: number;
+
+  /** Thread last updated time */
+  updatedAt: number;
+
+  testerId: string;
+
+  /** Link to ChatStore sessions (needed for thread switching UI) */
+  sessionIdA?: string;
+  sessionIdB?: string;
+
+  /** A short title for sidebar thread list */
+  title?: string;
+
+  /**
+   * System configurations (legacy; kept for backward compatibility).
+   * UI should not rely on these fields for revealing method identities.
+   */
   maskA: {
     id: string;
     name: string;
-    modelConfig: any; // 快照完整的 modelConfig
+    modelConfig: any;
   };
   maskB: {
     id: string;
@@ -22,43 +45,46 @@ export interface ArenaMatchRecord {
     modelConfig: any;
   };
 
-  // Conversation history
-  messages: {
-    userInput: string;
-    responseA: string;
-    responseB: string;
-    timestamp: number;
-  }[];
+  /** Conversation history (multi-turn) */
+  messages: ArenaTurnRecord[];
 
-  // Voting result
+  /** Voting result (locked once voted) */
   vote: VoteType;
   votedAt: number | null;
 
-  // Blind test flag
+  /** Blind test flag (legacy) */
   wasBlindTest: boolean;
+
+  /** Internal metadata for research export (never display in UI) */
+  internal?: Record<string, any>;
 }
 
+// Backward-compatible name; conceptually this is a "thread".
+export type ArenaMatchRecord = ArenaThreadRecord;
+
 export interface ArenaConfig {
-  testerId: string; // 测试者的唯一标识
-  backupWebhookUrl: string; // Google Apps Script Web App URL
+  testerId: string;
   lastBackupTime: number;
-  backupIntervalDays: number; // 默认3天
+  backupIntervalDays: number;
 }
 
 interface ArenaState {
-  // Current match state
+  // Current thread state (legacy flags kept)
   isMatchActive: boolean;
   isBlindTest: boolean;
 
   leftMaskId: string | null;
   rightMaskId: string | null;
 
-  leftSessionId: string | null; // 对应 ChatStore 中的 session.id
+  leftSessionId: string | null;
   rightSessionId: string | null;
 
-  currentMatchId: string | null;
+  // Canonical thread fields
+  currentThreadId: string | null;
+  threads: ArenaThreadRecord[];
 
-  // History
+  // Backward-compatible aliases
+  currentMatchId: string | null;
   matches: ArenaMatchRecord[];
 
   // Configuration
@@ -75,49 +101,79 @@ const DEFAULT_ARENA_STATE: ArenaState = {
   leftSessionId: null,
   rightSessionId: null,
 
-  currentMatchId: null,
+  currentThreadId: null,
+  threads: [],
 
+  currentMatchId: null,
   matches: [],
 
   config: {
     testerId: nanoid(),
-    backupWebhookUrl: "",
     lastBackupTime: 0,
     backupIntervalDays: 3,
   },
 };
 
+function cloneModelConfig(modelConfig: any) {
+  return JSON.parse(JSON.stringify(modelConfig));
+}
+
+function normalizeTitle(userInput: string) {
+  const trimmed = userInput.trim();
+  if (!trimmed) return "";
+  return trimmed.slice(0, 32);
+}
+
+function mergeById<T extends { id: string }>(existing: T[], incoming: T[]) {
+  const byId = new Map<string, T>();
+  for (const item of existing) byId.set(item.id, item);
+  for (const item of incoming) byId.set(item.id, item);
+  return Array.from(byId.values()).sort((a, b) => {
+    const ta = (a as any).timestamp ?? 0;
+    const tb = (b as any).timestamp ?? 0;
+    return ta - tb;
+  });
+}
+
 export const useArenaStore = createPersistStore(
   DEFAULT_ARENA_STATE,
   (set, get) => ({
-    // 开始新对局
-    startNewMatch(
+    // Start a new thread (canonical)
+    startNewThread(
       maskA: Mask,
       maskB: Mask,
       sessionIdA: string,
       sessionIdB: string,
       isBlind: boolean = false,
     ) {
-      const matchId = nanoid();
-      const newMatch: ArenaMatchRecord = {
-        id: matchId,
-        timestamp: Date.now(),
+      const threadId = nanoid();
+      const now = Date.now();
+
+      const newThread: ArenaThreadRecord = {
+        id: threadId,
+        timestamp: now,
+        updatedAt: now,
         testerId: get().config.testerId,
+        sessionIdA,
+        sessionIdB,
+        title: "",
         maskA: {
           id: maskA.id,
           name: maskA.name,
-          modelConfig: JSON.parse(JSON.stringify(maskA.modelConfig)), // 深拷贝
+          modelConfig: cloneModelConfig(maskA.modelConfig),
         },
         maskB: {
           id: maskB.id,
           name: maskB.name,
-          modelConfig: JSON.parse(JSON.stringify(maskB.modelConfig)),
+          modelConfig: cloneModelConfig(maskB.modelConfig),
         },
         messages: [],
         vote: null,
         votedAt: null,
         wasBlindTest: isBlind,
       };
+
+      const nextThreads = [...get().threads, newThread];
 
       set({
         isMatchActive: true,
@@ -126,59 +182,123 @@ export const useArenaStore = createPersistStore(
         rightMaskId: maskB.id,
         leftSessionId: sessionIdA,
         rightSessionId: sessionIdB,
-        currentMatchId: matchId,
-        matches: [...get().matches, newMatch],
+        currentThreadId: threadId,
+        threads: nextThreads,
+
+        // Backward-compatible aliases
+        currentMatchId: threadId,
+        matches: nextThreads,
       });
     },
 
-    // 记录一轮对话
+    // Backward-compatible: start a new match
+    startNewMatch(
+      maskA: Mask,
+      maskB: Mask,
+      sessionIdA: string,
+      sessionIdB: string,
+      isBlind: boolean = false,
+    ) {
+      (get() as any).startNewThread(
+        maskA,
+        maskB,
+        sessionIdA,
+        sessionIdB,
+        isBlind,
+      );
+    },
+
+    // Record a turn (multi-turn)
     recordConversation(
       userInput: string,
       responseA: string,
       responseB: string,
     ) {
-      const matchId = get().currentMatchId;
-      if (!matchId) return;
+      const threadId = get().currentThreadId ?? get().currentMatchId;
+      if (!threadId) return;
 
-      set((state) => ({
-        matches: state.matches.map((match) =>
-          match.id === matchId
-            ? {
-                ...match,
-                messages: [
-                  ...match.messages,
-                  {
-                    userInput,
-                    responseA,
-                    responseB,
-                    timestamp: Date.now(),
-                  },
-                ],
-              }
-            : match,
-        ),
-      }));
+      set((state) => {
+        const nextThreads = state.threads.map((thread) => {
+          if (thread.id !== threadId) return thread;
+
+          const nextTitle = thread.title
+            ? thread.title
+            : normalizeTitle(userInput);
+          const now = Date.now();
+
+          return {
+            ...thread,
+            title: nextTitle,
+            updatedAt: now,
+            messages: [
+              ...thread.messages,
+              {
+                userInput,
+                responseA,
+                responseB,
+                timestamp: now,
+              },
+            ],
+          };
+        });
+
+        return {
+          threads: nextThreads,
+          matches: nextThreads,
+        } as Partial<ArenaState>;
+      });
     },
 
-    // 提交投票
+    // Switch to existing thread
+    selectThread(threadId: string) {
+      const thread = get().threads.find((t) => t.id === threadId);
+      if (!thread) return;
+
+      set({
+        isMatchActive: true,
+        isBlindTest: thread.wasBlindTest,
+        leftMaskId: thread.maskA.id,
+        rightMaskId: thread.maskB.id,
+        leftSessionId: thread.sessionIdA ?? null,
+        rightSessionId: thread.sessionIdB ?? null,
+        currentThreadId: thread.id,
+
+        // Backward-compatible aliases
+        currentMatchId: thread.id,
+      });
+    },
+
+    // Backward-compatible: select match
+    selectMatch(matchId: string) {
+      (get() as any).selectThread(matchId);
+    },
+
+    // Submit vote (locked once voted)
     submitVote(vote: VoteType) {
-      const matchId = get().currentMatchId;
-      if (!matchId || !vote) return;
+      const threadId = get().currentThreadId ?? get().currentMatchId;
+      if (!threadId || !vote) return;
 
-      set((state) => ({
-        matches: state.matches.map((match) =>
-          match.id === matchId
-            ? {
-                ...match,
-                vote,
-                votedAt: Date.now(),
-              }
-            : match,
-        ),
-      }));
+      set((state) => {
+        const nextThreads = state.threads.map((thread) => {
+          if (thread.id !== threadId) return thread;
+          if (thread.vote !== null) return thread;
+
+          return {
+            ...thread,
+            vote,
+            votedAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        });
+
+        return {
+          threads: nextThreads,
+          matches: nextThreads,
+        } as Partial<ArenaState>;
+      });
     },
 
-    // 结束当前对局
+    // End current thread (legacy behavior)
     endMatch() {
       set({
         isMatchActive: false,
@@ -187,40 +307,34 @@ export const useArenaStore = createPersistStore(
         rightMaskId: null,
         leftSessionId: null,
         rightSessionId: null,
+        currentThreadId: null,
+
+        // Backward-compatible aliases
         currentMatchId: null,
       });
     },
 
-    // 导出数据为 JSON
+    // Export data as JSON
     exportData() {
       const data = {
         testerId: get().config.testerId,
         exportTime: Date.now(),
-        matches: get().matches,
+        threads: get().threads,
       };
       return JSON.stringify(data, null, 2);
     },
 
-    // 检查并执行自动备份（静默模式，不显示任何日志或提示）
+    // Auto backup (silent)
     async checkAndPerformBackup() {
       const config = get().config;
       const now = Date.now();
       const intervalMs = config.backupIntervalDays * 24 * 60 * 60 * 1000;
 
-      // 检查是否到期
-      if (now - config.lastBackupTime < intervalMs) {
-        return;
-      }
+      if (now - config.lastBackupTime < intervalMs) return;
 
-      // 检查是否配置了 Webhook URL
-      if (!config.backupWebhookUrl) {
-        return;
-      }
-
-      // 获取待备份的数据
       const lastBackup = config.lastBackupTime;
-      const pendingMatches = get().matches.filter(
-        (match) => match.timestamp > lastBackup,
+      const pendingThreads = get().threads.filter(
+        (t) => t.timestamp > lastBackup,
       );
 
       const data = {
@@ -228,11 +342,11 @@ export const useArenaStore = createPersistStore(
         backupTime: now,
         periodStart: lastBackup,
         periodEnd: now,
-        matchCount: pendingMatches.length,
-        matches: pendingMatches,
+        threadCount: pendingThreads.length,
+        threads: pendingThreads,
       };
 
-      if (data.matchCount === 0) {
+      if (data.threadCount === 0) {
         set((state) => ({
           config: {
             ...state.config,
@@ -242,8 +356,11 @@ export const useArenaStore = createPersistStore(
         return;
       }
 
+      // Prefer server-side proxy to avoid exposing webhook URL to clients.
+      const backupEndpoint = "/api/arena/backup";
+
       try {
-        const response = await fetch(config.backupWebhookUrl, {
+        const response = await fetch(backupEndpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -259,13 +376,12 @@ export const useArenaStore = createPersistStore(
             },
           }));
         }
-        // 静默失败，不显示错误
       } catch {
-        // 静默失败，不显示错误
+        // silent
       }
     },
 
-    // 更新配置
+    // Update config
     updateConfig(updates: Partial<ArenaConfig>) {
       set((state) => ({
         config: {
@@ -275,22 +391,47 @@ export const useArenaStore = createPersistStore(
       }));
     },
 
-    // 清空历史数据
+    // Clear history
     clearHistory() {
-      set({ matches: [] });
+      set({ threads: [], matches: [] });
     },
 
-    // 导入数据（用于管理员面板）
+    // Import data (append)
     importData(jsonData: string) {
       try {
         const data = JSON.parse(jsonData);
-        if (data.matches && Array.isArray(data.matches)) {
-          set((state) => ({
-            matches: [...state.matches, ...data.matches],
-          }));
-          return true;
-        }
-        return false;
+        const incoming: ArenaThreadRecord[] = Array.isArray(data?.threads)
+          ? data.threads
+          : Array.isArray(data?.matches)
+          ? data.matches
+          : [];
+
+        if (!Array.isArray(incoming) || incoming.length === 0) return false;
+
+        const normalized = incoming.map((t) => {
+          const ts = Number(t.timestamp) || Date.now();
+          const updatedAt = Number((t as any).updatedAt) || ts;
+          return {
+            ...t,
+            timestamp: ts,
+            updatedAt,
+            title: typeof t.title === "string" ? t.title : "",
+            messages: Array.isArray(t.messages) ? t.messages : [],
+            vote: (t.vote ?? null) as VoteType,
+            votedAt: t.votedAt ?? null,
+            wasBlindTest: Boolean(t.wasBlindTest),
+          } as ArenaThreadRecord;
+        });
+
+        set((state) => {
+          const merged = mergeById(state.threads, normalized);
+          return {
+            threads: merged,
+            matches: merged,
+          } as Partial<ArenaState>;
+        });
+
+        return true;
       } catch (error) {
         console.error("[Arena] Import failed:", error);
         return false;
@@ -299,6 +440,43 @@ export const useArenaStore = createPersistStore(
   }),
   {
     name: StoreKey.Arena,
-    version: 1.0,
+    version: 2.0,
+    migrate(state, version) {
+      const next = JSON.parse(
+        JSON.stringify(state ?? {}),
+      ) as Partial<ArenaState>;
+
+      // v1 -> v2: introduce threads/currentThreadId and keep matches aliases.
+      if (version < 2) {
+        const matches = Array.isArray((next as any).matches)
+          ? ((next as any).matches as ArenaThreadRecord[])
+          : [];
+
+        (next as any).threads = matches;
+        (next as any).currentThreadId = (next as any).currentMatchId ?? null;
+
+        // Ensure aliases exist
+        (next as any).matches = matches;
+      }
+
+      // Ensure updatedAt exists on all threads
+      if (Array.isArray((next as any).threads)) {
+        (next as any).threads = (
+          (next as any).threads as ArenaThreadRecord[]
+        ).map((t) => ({
+          ...t,
+          updatedAt: Number((t as any).updatedAt) || Number(t.timestamp) || 0,
+          title: typeof (t as any).title === "string" ? (t as any).title : "",
+          messages: Array.isArray((t as any).messages)
+            ? (t as any).messages
+            : [],
+          vote: ((t as any).vote ?? null) as VoteType,
+          votedAt: (t as any).votedAt ?? null,
+        }));
+        (next as any).matches = (next as any).threads;
+      }
+
+      return next as any;
+    },
   },
 );

@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
+import { useNavigate } from "react-router-dom";
 
 import styles from "./arena.module.scss";
 
@@ -16,7 +17,9 @@ import CopyIcon from "../icons/copy.svg";
 import ReloadIcon from "../icons/reload.svg";
 import MaxIcon from "../icons/max.svg";
 import SendWhiteIcon from "../icons/send-white.svg";
+import SettingsIcon from "../icons/settings.svg";
 
+import { Path } from "../constant";
 import { useArenaStore, VoteType } from "../store/arena";
 import { useChatStore } from "../store/chat";
 import { Mask, useMaskStore } from "../store/mask";
@@ -133,6 +136,7 @@ function ArenaPanel(props: ArenaPanelProps) {
 }
 
 export function Arena() {
+  const navigate = useNavigate();
   const arenaStore = useArenaStore();
   const chatStore = useChatStore();
   const maskStore = useMaskStore();
@@ -280,6 +284,15 @@ export function Arena() {
         <div className={styles["arena-header-title"]}>
           ⚔️ Arena
           <span className={styles["arena-header-mode"]}>Battle</span>
+        </div>
+        <div className={styles["arena-header-actions"]}>
+          <button
+            className={styles["arena-settings-btn"]}
+            onClick={() => navigate(Path.Settings)}
+            title="Settings"
+          >
+            <SettingsIcon />
+          </button>
         </div>
       </div>
 

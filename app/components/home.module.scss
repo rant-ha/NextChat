@@ -101,6 +101,16 @@
   flex-direction: column;
 }
 
+.window-content-fullscreen {
+  width: 100%;
+}
+
+.fullscreen-container {
+  max-width: 100vw;
+  border-radius: 0;
+  border: 0;
+}
+
 .mobile {
   display: none;
 }

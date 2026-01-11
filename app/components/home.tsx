@@ -126,9 +126,17 @@ const loadAsyncGoogleFont = () => {
   document.head.appendChild(linkEl);
 };
 
-export function WindowContent(props: { children: React.ReactNode }) {
+export function WindowContent(props: {
+  children: React.ReactNode;
+  fullscreen?: boolean;
+}) {
   return (
-    <div className={styles["window-content"]} id={SlotID.AppBody}>
+    <div
+      className={clsx(styles["window-content"], {
+        [styles["window-content-fullscreen"]]: props.fullscreen,
+      })}
+      id={SlotID.AppBody}
+    >
       {props?.children}
     </div>
   );
@@ -137,8 +145,13 @@ export function WindowContent(props: { children: React.ReactNode }) {
 function Screen() {
   const config = useAppConfig();
   const location = useLocation();
-  const isHome = location.pathname === Path.Home;
   const isAuth = location.pathname === Path.Auth;
+
+  // Check if current route should be fullscreen (no sidebar)
+  const isFullscreenRoute =
+    location.pathname === Path.Home ||
+    location.pathname === Path.Arena ||
+    location.pathname === Path.ArenaAdmin;
 
   const isMobileScreen = useMobileScreen();
   const shouldTightBorder =
@@ -150,13 +163,26 @@ function Screen() {
 
   const renderContent = () => {
     if (isAuth) return <AuthPage />;
+
+    // For fullscreen routes (Arena), don't show sidebar
+    if (isFullscreenRoute) {
+      return (
+        <WindowContent fullscreen>
+          <Routes>
+            <Route path={Path.Home} element={<Arena />} />
+            <Route path={Path.Arena} element={<Arena />} />
+            <Route path={Path.ArenaAdmin} element={<ArenaAdmin />} />
+            <Route path={Path.Settings} element={<Settings />} />
+            <Route path={Path.Masks} element={<MaskPage />} />
+          </Routes>
+        </WindowContent>
+      );
+    }
+
+    // For other routes, show sidebar
     return (
       <>
-        <SideBar
-          className={clsx({
-            [styles["sidebar-show"]]: isHome,
-          })}
-        />
+        <SideBar className={styles["sidebar-show"]} />
         <WindowContent>
           <Routes>
             <Route path={Path.Home} element={<Arena />} />
@@ -174,6 +200,7 @@ function Screen() {
     <div
       className={clsx(styles.container, {
         [styles["tight-container"]]: shouldTightBorder,
+        [styles["fullscreen-container"]]: isFullscreenRoute,
         [styles["rtl-screen"]]: getLang() === "ar",
       })}
     >

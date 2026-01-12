@@ -20,6 +20,8 @@ import { useArenaStore, VoteType } from "../store/arena";
 import { useChatStore } from "../store/chat";
 import { createEmptyMask } from "../store/mask";
 import { copyToClipboard, getMessageTextContent } from "../utils";
+import { getHeaders } from "../client/api";
+import { showToast } from "./ui-lib";
 
 const Markdown = dynamic(async () => (await import("./markdown")).Markdown, {
   loading: () => <LoadingIcon />, // eslint-disable-line react/no-unstable-nested-components
@@ -292,9 +294,37 @@ export function Arena() {
     }));
 
     try {
+      if (!model) {
+        showToast("Model is empty. Please select a model in Settings.");
+        setUserInput(text);
+        return;
+      }
+
+      const supportedProviders = new Set([
+        "openai",
+        "xai",
+        "moonshot",
+        "siliconflow",
+        "302ai",
+        "302.ai",
+        "302",
+        "deepseek",
+      ]);
+
+      if (!supportedProviders.has(provider)) {
+        showToast(
+          `Arena currently supports OpenAI-compatible providers only (got: ${provider}).`,
+        );
+        setUserInput(text);
+        return;
+      }
+
       const res = await fetch("/api/arena/turn", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          ...getHeaders(),
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           messagesA,
           messagesB,
@@ -304,10 +334,26 @@ export function Arena() {
           model: { provider, model },
         }),
       });
-      const json = await res.json();
-      if (!json?.ok) {
-        throw new Error(json?.error || "Arena turn failed");
+
+      const raw = await res.text();
+      let json: any = null;
+      try {
+        json = raw ? JSON.parse(raw) : null;
+      } catch {
+        json = null;
       }
+
+      if (!res.ok || !json?.ok) {
+        const errMsg =
+          json?.error ||
+          json?.msg ||
+          raw ||
+          `HTTP ${res.status} ${res.statusText}`;
+        showToast(`Arena request failed: ${String(errMsg).slice(0, 200)}`);
+        setUserInput(text);
+        return;
+      }
+
       const respA = json.a?.text ?? "";
       const respB = json.b?.text ?? "";
 
@@ -350,6 +396,8 @@ export function Arena() {
       arenaStore.recordConversation(text, respA, respB);
     } catch (e) {
       console.error("[Arena] sendToBoth failed", e);
+      showToast(`Arena request failed: ${String(e).slice(0, 200)}`);
+      setUserInput(text);
     } finally {
       setIsSending(false);
       requestAnimationFrame(() => inputRef.current?.focus());
